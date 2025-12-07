@@ -16,13 +16,13 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === PRETRAINED COMMITTEE MODELS ===
 
-- [ ] Load/download pretrained models for committee (e.g., ResNet18, VGG, MobileNet variants)
-- [ ] Create committee inference script that:
+- [x] Load/download pretrained models for committee (e.g., ResNet18, VGG, MobileNet variants)
+- [x] Create committee inference script that:
   - Loads all committee models
   - Runs forward pass on full dataset
   - Saves softmax predictions for each model
-- [ ] Compute and cache difficulty scores (entropy of averaged softmax) for all samples
-- [ ] Save difficulty scores to disk (embeddings/difficulty_scores.npy or similar)
+- [x] Compute and cache difficulty scores (entropy of averaged softmax) for all samples
+- [x] Save difficulty scores to disk (embeddings/difficulty_scores.npy or similar)
 
 ---
 

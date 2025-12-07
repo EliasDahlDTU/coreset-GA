@@ -38,6 +38,9 @@ embeddings/*
 # Pretrained models (can be large)
 pretrained_committee_models/*
 !pretrained_committee_models/.gitkeep
+!pretrained_committee_models/prepare_committee.py
+!pretrained_committee_models/__init__.py
+!pretrained_committee_models/run_inference.py
 
 # Training outputs
 training/*

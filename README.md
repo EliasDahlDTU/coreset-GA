@@ -284,6 +284,45 @@ This creates:
 
 **Note:** The seed (default: 2025) ensures reproducible data splits. Use the same seed to reproduce exact results.
 
+### Committee Model Preparation
+
+Download and prepare pretrained committee models (adapted for MNIST):
+
+```bash
+# Prepare all committee models (ResNet18, VGG11, MobileNetV2)
+python pretrained_committee_models/prepare_committee.py
+
+# Or prepare specific models
+python pretrained_committee_models/prepare_committee.py --models resnet18 vgg11 mobilenet_v2
+```
+
+This downloads ImageNet-pretrained models from torchvision and adapts them for MNIST by:
+- Modifying input layers to accept 1-channel images (MNIST) instead of 3-channel (ImageNet)
+- Replacing final classification layers for 10 classes (MNIST)
+
+Models are saved to `pretrained_committee_models/` directory.
+
+### Committee Inference and Difficulty Scores
+
+Run committee inference on the selection pool and compute difficulty scores:
+
+```bash
+# Run inference with all committee models
+python pretrained_committee_models/run_inference.py
+
+# Or with custom settings
+python pretrained_committee_models/run_inference.py --batch-size 128 --device cuda
+```
+
+This script:
+- Loads all committee models
+- Runs inference on the selection pool
+- Saves softmax predictions for each model to `embeddings/{model_name}_predictions.npy`
+- Computes averaged committee predictions
+- Computes difficulty scores (entropy of averaged predictions) and saves to `embeddings/difficulty_scores.npy`
+
+**Note:** Difficulty scores are cached and will be reused by the GA evaluation module.
+
 ---
 
 ## License
