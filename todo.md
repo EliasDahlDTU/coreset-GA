@@ -10,7 +10,7 @@ A step-by-step guide to building the coreset-GA system.
 - [x] Create requirements.txt with dependencies (numpy, torch, deap, scikit-learn, matplotlib, jupyter, etc.)
 - [x] Download/prepare dataset and organize in data/
 - [x] Create data loading utilities (train/test splits, class labels, image preprocessing)
-- [ ] Set up configuration file (config.yaml or config.py) for hyperparameters, paths, k-values
+- [x] Set up configuration file (config.yaml or config.py) for hyperparameters, paths, k-values
 
 ---
 

@@ -205,27 +205,40 @@ This visualization shows:
 ## Repository Structure
 ```
 .
+├── config/
+│   ├── __init__.py
+│   └── default.py          # Main configuration file
 ├── data/
+│   ├── __init__.py
+│   ├── prepare_mnist.py   # Dataset preparation script
+│   └── load_data.py        # Data loading utilities
 ├── embeddings/
 ├── pretrained_committee_models/
 ├── ga/
+│   ├── __init__.py
 │   ├── nsga2.py
 │   ├── population.py
 │   ├── mutation.py
 │   ├── crossover.py
-│   ├── evaluation.py
+│   └── evaluation.py
 ├── experiments/
+│   ├── __init__.py
 │   ├── run_k50.py
 │   ├── run_k100.py
-│   └── ...
+│   ├── run_k200.py
+│   ├── run_k500.py
+│   ├── run_k750.py
+│   └── run_k1000.py
 ├── analysis/
 │   ├── plot_pareto.ipynb
-│   ├── visualize_subsets.ipynb
+│   └── visualize_subsets.ipynb
 ├── results/
 ├── training/
 ├── final_models/
 ├── README.md
-└── requirements.txt
+├── todo.md
+├── requirements.txt
+└── .gitignore
 ```
 
 ---
