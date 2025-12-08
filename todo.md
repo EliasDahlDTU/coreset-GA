@@ -69,12 +69,12 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === GA EXPERIMENTS ===
 
-- [ ] Create experiment runner script template (experiments/run_k_template.py)
-- [ ] Implement run_k50.py, run_k100.py, run_k200.py, run_k500.py, run_k750.py, run_k1000.py
-- [ ] Add command-line arguments (k, population size, generations, seed)
-- [ ] Implement checkpointing (save population every N generations)
-- [ ] Save final Pareto front for each k to results/pareto_k{size}.pkl or .json
-- [ ] Log GA metrics (convergence, hypervolume, generation time)
+- [x] Create experiment runner script template (experiments/run_k_template.py)
+- [x] Implement run_k50.py, run_k100.py, run_k200.py, run_k500.py, run_k750.py, run_k1000.py
+- [x] Add command-line arguments (k, population size, generations, seed)
+- [x] Implement checkpointing (save population every N generations)
+- [x] Save final Pareto front for each k to results/pareto_k{size}.pkl or .json
+- [x] Log GA metrics (convergence, hypervolume, generation time)
 
 ---
 
