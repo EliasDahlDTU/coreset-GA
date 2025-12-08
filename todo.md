@@ -80,12 +80,12 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === SUBSET SELECTION ===
 
-- [ ] Implement subset selection from Pareto front:
+- [x] Implement subset selection from Pareto front:
   - Load Pareto-optimal solutions for given k
   - Compute weighted score (difficulty + diversity + balance)
   - Select best subset (or closest to ideal point)
-- [ ] Save selected subset indices to results/selected_k{size}.npy
-- [ ] Create visualization of selected subset (class distribution, sample images)
+- [x] Save selected subset indices to results/selected_k{size}.npy
+- [x] Create visualization of selected subset (class distribution, sample images)
 
 ---
 
@@ -106,9 +106,7 @@ A step-by-step guide to building the coreset-GA system.
 ## === BASELINE IMPLEMENTATION ===
 
 - [ ] Implement random baseline (generate 5 random subsets per k, train on each)
-- [ ] Implement hardest-only baseline (top-k by difficulty, train model)
-- [ ] Implement balanced-only baseline (greedy selection maximizing balance, train model)
-- [ ] Implement full-dataset training (upper bound baseline)
+- [ ] Implement GA-selected training (compatible with each k-value)
 - [ ] Save all baseline models to final_models/baseline_{type}_k{size}.pth
 
 ---

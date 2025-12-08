@@ -346,6 +346,52 @@ This script:
 - Embeddings are only extracted from the **selection pool** (not validation/test sets), as they are only needed for the GA diversity objective computation.
 - Embeddings are cached and will be reused by the GA evaluation module.
 
+### Running GA Experiments
+
+Run NSGA-II to find Pareto-optimal subsets for each k value:
+
+```bash
+# Run for k=100 (or any k value: 50, 100, 200, 500, 750, 1000)
+python experiments/run_k100.py
+
+# With custom parameters
+python experiments/run_k100.py --population-size 50 --generations 30 --seed 123
+
+# Quiet mode (suppress verbose output)
+python experiments/run_k100.py --quiet
+```
+
+This creates:
+- `results/pareto_k{k}.pkl` - Full results (population, fitnesses, Pareto front, history)
+- `results/pareto_k{k}.json` - Human-readable summary with metadata and Pareto front fitnesses
+
+**Note:** Run experiments for all k values to generate the complete Pareto curve.
+
+### Subset Selection from Pareto Front
+
+After running GA experiments, select the best subset from each Pareto front:
+
+```bash
+# Select subset for k=100 using weighted score (default)
+python experiments/select_subset.py 100
+
+# Use ideal point method instead
+python experiments/select_subset.py 100 --method ideal_point
+
+# Create visualization of selected subset
+python experiments/select_subset.py 100 --visualize
+```
+
+This script:
+- Loads Pareto-optimal solutions from `results/pareto_k{k}.pkl`
+- Selects best subset using either:
+  - **Weighted score** (default): weighted sum of normalized objectives
+  - **Ideal point**: closest to utopian point (max difficulty, max diversity, max balance)
+- Saves selected subset indices to `results/selected_k{k}.npy`
+- Optionally creates visualization showing class distribution
+
+**Note:** The selected subset will be used for model training in the next step.
+
 ---
 
 ## License
