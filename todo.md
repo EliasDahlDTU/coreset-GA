@@ -117,13 +117,13 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === EVALUATION & METRICS ===
 
-- [ ] Create evaluation script that:
+- [x] Create evaluation script that:
   - Loads all trained models (GA-selected + baselines)
   - Runs inference on held-out test set
-  - Computes test accuracy, per-class F1, confusion matrix
-- [ ] Calculate training efficiency metric (accuracy / k)
-- [ ] Log convergence speed (epochs to 90% of final accuracy)
-- [ ] Save evaluation results to results/evaluation_k{size}.json
+  - Computes test accuracy, and one multi-class relevant metric
+- [x] Calculate training efficiency metric (accuracy / k)
+- [x] Log convergence speed (epochs to 90% of final accuracy)
+- [x] Save evaluation results to results/evaluation.json
 
 ---
 
