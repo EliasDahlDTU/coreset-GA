@@ -129,17 +129,17 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === ANALYSIS & VISUALIZATION ===
 
-- [ ] Create plot_pareto.ipynb:
+- [x] Create plot_pareto.ipynb:
   - Plot Pareto fronts for each k (3D: difficulty vs diversity vs balance)
   - Show convergence over generations
   - Compare Pareto fronts across different k values
-- [ ] Create visualize_subsets.ipynb:
+- [x] Create visualize_subsets.ipynb:
   - Display sample images from selected subsets
   - Show class distribution histograms
-  - Compare GA-selected vs random vs baseline subsets
-- [ ] Create final results notebook:
+  - Compare GA-selected vs random baseline subsets
+- [x] Create final results notebook:
   - Plot accuracy vs dataset size Pareto curve
-  - Show accuracy comparison (GA vs random vs baselines)
+  - Show accuracy comparison (GA vs random baselines)
   - Generate efficiency plots (accuracy per sample)
   - Create summary tables
 
