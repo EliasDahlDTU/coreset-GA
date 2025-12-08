@@ -238,6 +238,7 @@ This visualization shows:
 ├── README.md
 ├── todo.md
 ├── requirements.txt
+├── quick_start.py
 └── .gitignore
 ```
 
@@ -257,6 +258,121 @@ This visualization shows:
   - precomputed embeddings
   - one pass of committee softmaxes
 - Total GA runtime per \(k\): minutes to tens of minutes. Compute hours mainly go to the final evaluation classifiers.
+
+---
+
+## Installation
+
+### Requirements
+
+- Python 3.8+
+- CUDA-capable GPU (recommended, but CPU works for smaller experiments)
+
+### Setup
+
+1. **Clone the repository:**
+   ```bash
+   git clone <repository-url>
+   cd coreset-GA
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Verify installation:**
+   ```bash
+   python -c "import torch; import numpy; print('Installation successful!')"
+   ```
+
+---
+
+## Quick Start
+
+### Automated Pipeline
+
+Run the complete pipeline for a single k value automatically:
+
+```bash
+# Run everything for k=100
+python quick_start.py --k 100
+
+# Or skip steps that are already done
+python quick_start.py --k 100 --skip-data --skip-committee
+```
+
+### Manual Step-by-Step
+
+Alternatively, here's the manual step-by-step process:
+
+```bash
+# 1. Prepare dataset
+python data/prepare_mnist.py --seed 2025
+
+# 2. Prepare committee models
+python pretrained_committee_models/prepare_committee.py
+
+# 3. Compute difficulty scores
+python pretrained_committee_models/run_inference.py
+
+# 4. Extract embeddings
+python embeddings/extract_embeddings.py
+
+# 5. Run GA for k=100
+python experiments/run_k100.py
+
+# 6. Select best subset
+python experiments/select_subset.py 100
+
+# 7. Train CNN on GA-selected subset
+python training/train_cnn.py ga --k 100
+
+# 8. Train random baselines for comparison
+python training/train_baselines.py 100
+
+# 9. Evaluate all models
+python training/evaluate_models.py
+
+# 10. Generate visualizations (run notebooks)
+jupyter notebook analysis/final_results.ipynb
+```
+
+**Expected runtime:** ~2-4 hours for a single k value (depending on GPU).
+
+---
+
+## Expected Outputs
+
+After running the complete pipeline, you should have:
+
+### Data Files
+- `data/selection_pool_data.npy` - Selection pool (20k samples)
+- `data/validation_data.npy` - Validation set (2k samples)
+- `data/test_data.npy` - Test set (2k samples)
+
+### Precomputed Features
+- `embeddings/difficulty_scores.npy` - Difficulty scores for all selection pool samples
+- `embeddings/embeddings.npy` - 512-dim embeddings for all selection pool samples
+
+### GA Results
+- `results/pareto_k{k}.pkl` - Full Pareto front results (for each k)
+- `results/pareto_k{k}.json` - Human-readable Pareto front summary
+- `results/selected_k{k}.npy` - Selected subset indices (for each k)
+
+### Trained Models
+- `final_models/cnn_ga_k{k}.pth` - CNN trained on GA-selected subset
+- `final_models/cnn_random_k{k}_run{1-5}.pth` - CNNs trained on random baselines
+
+### Evaluation Results
+- `results/evaluation.json` - Comprehensive evaluation metrics for all models
+
+### Visualizations (from notebooks)
+- `results/pareto_fronts_3d.png` - 3D Pareto front plots
+- `results/convergence_curves.png` - Convergence over generations
+- `results/accuracy_vs_size.png` - **Main deliverable:** Accuracy vs dataset size curve
+- `results/training_efficiency.png` - Efficiency plots
+- `results/summary_table.csv` - Summary table with all metrics
 
 ---
 
@@ -391,6 +507,65 @@ This script:
 - Optionally creates visualization showing class distribution
 
 **Note:** The selected subset will be used for model training in the next step.
+
+### Model Training
+
+Train CNNs on selected subsets:
+
+```bash
+# Train on GA-selected subset
+python training/train_cnn.py ga --k 100
+
+# Train random baselines (5 runs)
+python training/train_baselines.py 100
+
+# Train on full dataset (upper bound)
+python training/train_cnn.py full
+```
+
+This creates trained models in `final_models/` with proper naming:
+- `cnn_ga_k{k}.pth` - GA-selected model
+- `cnn_random_k{k}_run{1-5}.pth` - Random baseline models
+- `cnn_full.pth` - Full dataset model
+
+### Model Evaluation
+
+Evaluate all trained models and compute metrics:
+
+```bash
+# Evaluate all models for all k values
+python training/evaluate_models.py
+
+# Evaluate specific k values
+python training/evaluate_models.py --k-values 50 100 200
+```
+
+This computes:
+- Test accuracy
+- Per-class and macro F1 scores
+- Training efficiency (accuracy / k)
+- Convergence speed (epochs to 90% of final accuracy)
+
+Results are saved to `results/evaluation.json`.
+
+### Generate Visualizations
+
+Run the analysis notebooks to create final visualizations:
+
+```bash
+# Start Jupyter
+jupyter notebook
+
+# Then open:
+# - analysis/plot_pareto.ipynb (Pareto front visualization)
+# - analysis/visualize_subsets.ipynb (Subset comparison)
+# - analysis/final_results.ipynb (Final accuracy curves and summary)
+```
+
+Or run notebooks programmatically:
+```bash
+jupyter nbconvert --to notebook --execute analysis/final_results.ipynb
+```
 
 ---
 

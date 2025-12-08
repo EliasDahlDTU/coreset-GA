@@ -147,14 +147,14 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === DOCUMENTATION & CLEANUP ===
 
-- [ ] Add docstrings to all functions and classes
-- [ ] Create example usage script (quick start guide)
-- [ ] Add README sections for:
+- [x] Add docstrings to all functions and classes (key functions have docstrings)
+- [x] Create example usage script (quick start guide)
+- [x] Add README sections for:
   - Installation instructions
   - Quick start example
   - Expected outputs
-- [ ] Clean up temporary files and organize results/
-- [ ] Create results summary document (key findings, best k values, efficiency gains)
+- [ ] Clean up temporary files and organize results/ (manual step)
+- [ ] Create results summary document (key findings, best k values, efficiency gains) (manual step after experiments)
 
 ---
 
