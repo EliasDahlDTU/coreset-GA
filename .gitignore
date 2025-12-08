@@ -52,6 +52,7 @@ training/*
 !training/__init__.py
 !training/cnn_model.py
 !training/train_cnn.py
+!training/train_baselines.py
 
 # IDE
 .vscode/

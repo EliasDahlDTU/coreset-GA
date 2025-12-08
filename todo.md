@@ -110,9 +110,8 @@ A step-by-step guide to building the coreset-GA system.
 
 ## === BASELINE IMPLEMENTATION ===
 
-- [ ] Implement random baseline (generate 5 random subsets per k, train on each)
-- [ ] Implement GA-selected training (compatible with each k-value)
-- [ ] Save all baseline models to final_models/baseline_{type}_k{size}.pth
+- [x] Implement random baseline (generate 5 random subsets per k, train on each)
+- [x] GA-selected training (already implemented in train_cnn.py)
 
 ---
 
