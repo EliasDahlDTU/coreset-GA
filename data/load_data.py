@@ -51,7 +51,7 @@ def load_dataset_metadata(data_dir: str = "data") -> dict:
         return json.load(f)
 
 
-def load_selection_pool(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]:
+def load_selection_pool(data_dir: str = "data", mmap: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load the selection pool data and labels.
     
@@ -63,13 +63,14 @@ def load_selection_pool(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]
     """
     data_path = Path(data_dir)
     
-    data = np.load(data_path / "selection_pool_data.npy")
-    labels = np.load(data_path / "selection_pool_labels.npy")
+    mmap_mode = "r" if mmap else None
+    data = np.load(data_path / "selection_pool_data.npy", mmap_mode=mmap_mode)
+    labels = np.load(data_path / "selection_pool_labels.npy", mmap_mode=mmap_mode)
     
     return data, labels
 
 
-def load_validation_set(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]:
+def load_validation_set(data_dir: str = "data", mmap: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load the validation set data and labels.
     
@@ -81,13 +82,14 @@ def load_validation_set(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]
     """
     data_path = Path(data_dir)
     
-    data = np.load(data_path / "validation_data.npy")
-    labels = np.load(data_path / "validation_labels.npy")
+    mmap_mode = "r" if mmap else None
+    data = np.load(data_path / "validation_data.npy", mmap_mode=mmap_mode)
+    labels = np.load(data_path / "validation_labels.npy", mmap_mode=mmap_mode)
     
     return data, labels
 
 
-def load_test_set(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]:
+def load_test_set(data_dir: str = "data", mmap: bool = False) -> Tuple[np.ndarray, np.ndarray]:
     """
     Load the test set data and labels.
     
@@ -99,8 +101,9 @@ def load_test_set(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]:
     """
     data_path = Path(data_dir)
     
-    data = np.load(data_path / "test_data.npy")
-    labels = np.load(data_path / "test_labels.npy")
+    mmap_mode = "r" if mmap else None
+    data = np.load(data_path / "test_data.npy", mmap_mode=mmap_mode)
+    labels = np.load(data_path / "test_labels.npy", mmap_mode=mmap_mode)
     
     return data, labels
 
@@ -108,7 +111,8 @@ def load_test_set(data_dir: str = "data") -> Tuple[np.ndarray, np.ndarray]:
 def get_subset_data(
     indices: np.ndarray,
     data_dir: str = "data",
-    split: str = "selection_pool"
+    split: str = "selection_pool",
+    mmap: bool = False
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Get a subset of data by indices.
@@ -122,11 +126,11 @@ def get_subset_data(
         Tuple of (data, labels) for the selected subset
     """
     if split == "selection_pool":
-        data, labels = load_selection_pool(data_dir)
+        data, labels = load_selection_pool(data_dir, mmap=mmap)
     elif split == "validation":
-        data, labels = load_validation_set(data_dir)
+        data, labels = load_validation_set(data_dir, mmap=mmap)
     elif split == "test":
-        data, labels = load_test_set(data_dir)
+        data, labels = load_test_set(data_dir, mmap=mmap)
     else:
         raise ValueError(f"Unknown split: {split}. Use 'selection_pool', 'validation', or 'test'")
     
@@ -146,6 +150,8 @@ def create_dataloader(
     indices: Optional[np.ndarray] = None,
     pin_memory: bool = False,
     num_workers: int = 0,
+    prefetch_factor: int = 2,
+    persistent_workers: bool = False,
 ) -> DataLoader:
     """
     Create a PyTorch DataLoader from numpy arrays.
@@ -167,6 +173,8 @@ def create_dataloader(
         shuffle=shuffle,
         pin_memory=pin_memory,
         num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers if num_workers > 0 else False,
     )
 
 

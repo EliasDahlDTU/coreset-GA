@@ -39,8 +39,8 @@ def train_random_baselines(
     if seed is None:
         seed = config.BASELINE_SEED
     
-    # Load selection pool
-    _, labels = load_selection_pool()
+    # Load selection pool (mmap to reduce peak RAM)
+    _, labels = load_selection_pool(mmap=True)
     pool_size = len(labels)
     
     if verbose:

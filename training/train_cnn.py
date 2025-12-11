@@ -12,10 +12,8 @@ Supports training on:
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
 import numpy as np
 from pathlib import Path
-from tqdm import tqdm
 import json
 import sys
 from datetime import datetime
@@ -120,6 +118,10 @@ def train_cnn(
     non_blocking: bool = None,
     pin_memory: bool = None,
     num_workers: int = None,
+    prefetch_factor: int = None,
+    persistent_workers: bool = None,
+    use_compile: bool = None,
+    compile_mode: str = None,
     seed: int = None,
     verbose: bool = True
 ):
@@ -173,14 +175,26 @@ def train_cnn(
         pin_memory = config.TRAIN_PIN_MEMORY
     if num_workers is None:
         num_workers = config.TRAIN_NUM_WORKERS
+    if prefetch_factor is None:
+        prefetch_factor = config.TRAIN_PREFETCH_FACTOR
+    if persistent_workers is None:
+        persistent_workers = config.TRAIN_PERSISTENT_WORKERS
+    if use_compile is None:
+        use_compile = config.TRAIN_TORCH_COMPILE and hasattr(torch, "compile")
+    if compile_mode is None:
+        compile_mode = config.TRAIN_TORCH_COMPILE_MODE
     
     device = torch.device(device)
     
-    # Set random seed
+    # Set random seed and cuDNN tuning (safe for fixed shapes)
     torch.manual_seed(seed)
     np.random.seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = config.TRAIN_CUDNN_BENCHMARK
+    if torch.cuda.is_available():
+        torch.backends.cuda.matmul.allow_tf32 = config.ALLOW_TF32
     
     if verbose:
         print("=" * 60)
@@ -188,13 +202,17 @@ def train_cnn(
         if run_number is not None:
             print(f"Run number: {run_number}")
         print(f"Device: {device}")
-        print(f"AMP: {use_amp}, channels_last: {channels_last}, pin_memory: {pin_memory}, num_workers: {num_workers}")
+        print(
+            f"AMP: {use_amp}, channels_last: {channels_last}, pin_memory: {pin_memory}, "
+            f"num_workers: {num_workers}, prefetch_factor: {prefetch_factor}, "
+            f"persistent_workers: {persistent_workers}"
+        )
         print("=" * 60)
     
     # Load data
-    train_data, train_labels = get_subset_data(train_indices)
-    val_data, val_labels = load_validation_set()
-    test_data, test_labels = load_test_set()
+    train_data, train_labels = get_subset_data(train_indices, mmap=True)
+    val_data, val_labels = load_validation_set(mmap=True)
+    test_data, test_labels = load_test_set(mmap=True)
     
     # Create dataloaders
     train_loader = create_dataloader(
@@ -204,6 +222,8 @@ def train_cnn(
         shuffle=True,
         pin_memory=pin_memory,
         num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
     val_loader = create_dataloader(
         val_data,
@@ -212,6 +232,8 @@ def train_cnn(
         shuffle=False,
         pin_memory=pin_memory,
         num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
     test_loader = create_dataloader(
         test_data,
@@ -220,12 +242,19 @@ def train_cnn(
         shuffle=False,
         pin_memory=pin_memory,
         num_workers=num_workers,
+        prefetch_factor=prefetch_factor,
+        persistent_workers=persistent_workers,
     )
     
     # Create model
     model = create_cnn(num_classes=num_classes)
     if channels_last:
         model = model.to(memory_format=torch.channels_last)
+    if use_compile and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode=compile_mode)
+        except Exception:
+            pass
     model = model.to(device)
     
     # Loss and optimizer
@@ -315,7 +344,7 @@ def train_cnn(
     test_loss, test_acc = validate(model, test_loader, criterion, device)
     
     if verbose:
-        print(f"\n✓ Training completed!")
+        print("\n✓ Training completed!")
         print(f"  Best validation accuracy: {best_val_acc:.2f}% (epoch {best_epoch})")
         print(f"  Test accuracy: {test_acc:.2f}%")
         print(f"  Model saved to: {model_path}")
@@ -363,7 +392,7 @@ def get_model_path(k: int, subset_type: str, run_number: int = None) -> Path:
     elif subset_type == 'balanced':
         return final_models_dir / f"cnn_balanced_k{k}.pth"
     elif subset_type == 'full':
-        return final_models_dir / f"cnn_full.pth"
+        return final_models_dir / "cnn_full.pth"
     else:
         raise ValueError(f"Unknown subset_type: {subset_type}")
 

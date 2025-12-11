@@ -84,44 +84,35 @@ def non_dominated_sorting(fitnesses: List[Tuple[float, float, float]]) -> List[L
         List of fronts, where each front is a list of individual indices
     """
     n = len(fitnesses)
+    fitness_array = np.array(fitnesses)
     
-    # For each individual, track which individuals it dominates and how many dominate it
-    dominated_by = [[] for _ in range(n)]  # Individuals dominated by this one
-    domination_count = np.zeros(n, dtype=int)  # How many individuals dominate this one
+    # Vectorized dominance computation
+    # For maximization: fitness1 dominates fitness2 if all >= and any >
+    expanded = fitness_array[:, None, :]  # shape (n,1,3)
+    expanded_other = fitness_array[None, :, :]  # shape (1,n,3)
+    ge_mask = expanded >= expanded_other  # (n,n,3)
+    gt_mask = expanded > expanded_other   # (n,n,3)
     
-    # Build domination relationships
-    for i in range(n):
-        for j in range(n):
-            if i == j:
-                continue
-            
-            if dominates(fitnesses[i], fitnesses[j]):
-                dominated_by[i].append(j)
-            elif dominates(fitnesses[j], fitnesses[i]):
-                domination_count[i] += 1
+    dominates_mask = np.all(ge_mask, axis=2) & np.any(gt_mask, axis=2)
+    
+    # domination_count[i] = how many j dominate i
+    domination_count = dominates_mask.T.sum(axis=1)
+    # dominated_by[i] = indices j that i dominates
+    dominated_by = [list(np.flatnonzero(dominates_mask[i])) for i in range(n)]
     
     # Assign to fronts
     fronts = []
-    current_front = []
-    
-    # Find first front (non-dominated solutions)
-    for i in range(n):
-        if domination_count[i] == 0:
-            current_front.append(i)
-    
+    current_front = [i for i in range(n) if domination_count[i] == 0]
     fronts.append(current_front)
     
     # Find subsequent fronts
     while len(fronts[-1]) > 0:
         next_front = []
-        
         for i in fronts[-1]:
-            # For each individual dominated by i, decrease domination count
             for j in dominated_by[i]:
                 domination_count[j] -= 1
                 if domination_count[j] == 0:
                     next_front.append(j)
-        
         if len(next_front) > 0:
             fronts.append(next_front)
         else:
@@ -174,6 +165,7 @@ def crowding_distance(
         obj_max = front_fitnesses[sorted_indices[-1], obj_idx]
         obj_range = obj_max - obj_min
         
+        # Early-exit: if all values equal, skip accumulation for this objective
         if obj_range == 0:
             continue  # All same value, skip
         

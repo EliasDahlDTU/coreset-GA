@@ -69,7 +69,7 @@ def _load_cached_data():
                 f"Difficulty scores not found: {difficulty_path}\n"
                 f"Run 'python pretrained_committee_models/run_inference.py' first."
             )
-        _difficulty_scores = np.load(difficulty_path)
+        _difficulty_scores = np.load(difficulty_path, mmap_mode="r")
     
     if _embeddings is None:
         # Load embeddings
@@ -147,8 +147,21 @@ def diversity_objective(indices: np.ndarray) -> float:
         cosine_sim_matrix = subset_embeddings @ subset_embeddings.T
         n = len(indices)
         tri = torch.triu_indices(n, n, offset=1, device=cosine_sim_matrix.device)
-        upper_triangle = cosine_sim_matrix[tri[0], tri[1]]
-        mean_cosine_sim = float(upper_triangle.mean().item())
+        if n > 2048:
+            # Batch upper-tri extraction to reduce temporary memory (exact)
+            batch = 262144  # ~256k elements per chunk
+            total = tri.shape[1]
+            sum_vals = 0.0
+            count = 0
+            for start_idx in range(0, total, batch):
+                end_idx = min(start_idx + batch, total)
+                vals = cosine_sim_matrix[tri[0, start_idx:end_idx], tri[1, start_idx:end_idx]]
+                sum_vals += vals.sum().item()
+                count += vals.numel()
+            mean_cosine_sim = sum_vals / count
+        else:
+            upper_triangle = cosine_sim_matrix[tri[0], tri[1]]
+            mean_cosine_sim = float(upper_triangle.mean().item())
     else:
         subset_embeddings = _normalized_embeddings[indices]
         cosine_sim_matrix = np.dot(subset_embeddings, subset_embeddings.T)

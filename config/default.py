@@ -122,6 +122,13 @@ TRAIN_PIN_MEMORY = True     # Pin host memory for faster H2D
 TRAIN_NON_BLOCKING = True   # Non-blocking H2D copies
 TRAIN_USE_AMP = True        # Mixed precision (Tensor Cores on A100)
 TRAIN_CHANNELS_LAST = True  # Use NHWC for better conv throughput on Ampere
+TRAIN_PREFETCH_FACTOR = 4   # Batches prefetched per worker
+TRAIN_PERSISTENT_WORKERS = True  # Keep workers alive between epochs
+TRAIN_CUDNN_BENCHMARK = True     # Let cuDNN pick fastest algos for fixed shapes
+TRAIN_TORCH_COMPILE = False      # Set True to enable torch.compile (PyTorch 2+)
+TRAIN_TORCH_COMPILE_MODE = "default"  # "default" or "reduce-overhead"
+TRAIN_AUTOCast_DTYPE = "bfloat16"     # Options: "float16", "bfloat16"
+ALLOW_TF32 = True                    # Allow TF32 matmuls on Ampere+
 
 # Early stopping
 EARLY_STOPPING_PATIENCE = 10
@@ -168,7 +175,7 @@ COMPUTE_CONVERGENCE_SPEED = True
 # Diversity evaluation acceleration
 DIVERSITY_USE_GPU = False  # Set True to compute diversity with torch on GPU if available
 DIVERSITY_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DIVERSITY_TORCH_DTYPE = "float32"  # Options: "float16", "bfloat16", "float32"
+DIVERSITY_TORCH_DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
 
 # ============================================================================
 # RESULTS AND LOGGING
