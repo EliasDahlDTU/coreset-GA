@@ -1,7 +1,11 @@
 # Core dependencies
+# Install PyTorch with CUDA support for A100:
+# pip install --extra-index-url https://download.pytorch.org/whl/cu121 torch torchvision
+# Or use: pip install -r requirements.txt (with index URL below)
+--extra-index-url https://download.pytorch.org/whl/cu121
 numpy>=1.21.0
-torch>=1.10.0
-torchvision>=0.11.0
+torch>=2.0.0
+torchvision>=0.15.0
 
 # Genetic algorithm
 deap>=1.3.1
