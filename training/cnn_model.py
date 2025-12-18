@@ -94,7 +94,8 @@ class LightweightCNN(nn.Module):
         x = self.pool3(F.relu(self.bn3(self.conv3(x))))
         
         # Flatten
-        x = x.view(x.size(0), -1)
+        # Use flatten to handle channels_last/non-contiguous tensors safely
+        x = torch.flatten(x, 1)
         
         # Dense layers
         x = F.relu(self.fc1(x))

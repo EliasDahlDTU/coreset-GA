@@ -167,14 +167,17 @@ def create_dataloader(
         PyTorch DataLoader
     """
     dataset = MNISTSubsetDataset(data, labels, indices)
+    # prefetch_factor is only valid when num_workers > 0
+    effective_prefetch = prefetch_factor if num_workers > 0 else None
+    effective_persistent = persistent_workers if num_workers > 0 else False
     return DataLoader(
         dataset,
         batch_size=batch_size,
         shuffle=shuffle,
         pin_memory=pin_memory,
         num_workers=num_workers,
-        prefetch_factor=prefetch_factor,
-        persistent_workers=persistent_workers if num_workers > 0 else False,
+        prefetch_factor=effective_prefetch,
+        persistent_workers=effective_persistent,
     )
 
 

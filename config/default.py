@@ -92,7 +92,7 @@ COMMITTEE_MODEL_NAMES = [
 
 # Device for committee inference
 COMMITTEE_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-COMMITTEE_BATCH_SIZE = 128
+COMMITTEE_BATCH_SIZE = 512  # A100-friendly batch size for small MNIST tensors
 
 # ============================================================================
 # EMBEDDING SETTINGS
@@ -106,7 +106,7 @@ FEATURE_EXTRACTOR = "resnet50"  # Backbone without final layer
 
 # Device for embedding extraction
 EMBEDDING_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-EMBEDDING_BATCH_SIZE = 128
+EMBEDDING_BATCH_SIZE = 512  # Safe on A100 20GB for MNIST-sized inputs
 
 # ============================================================================
 # MODEL TRAINING SETTINGS
@@ -116,17 +116,17 @@ EMBEDDING_BATCH_SIZE = 128
 TRAIN_LEARNING_RATE = 0.001
 TRAIN_WEIGHT_DECAY = 1e-6
 TRAIN_EPOCHS = 50
-TRAIN_BATCH_SIZE_BASE = 32  # Will be adjusted based on subset size
-TRAIN_NUM_WORKERS = 4       # Dataloader workers (tune per machine)
+TRAIN_BATCH_SIZE_BASE = 128  # Cap; actual batch = min(base, k//2)
+TRAIN_NUM_WORKERS = 8       # A100 host can typically sustain this
 TRAIN_PIN_MEMORY = True     # Pin host memory for faster H2D
 TRAIN_NON_BLOCKING = True   # Non-blocking H2D copies
 TRAIN_USE_AMP = True        # Mixed precision (Tensor Cores on A100)
 TRAIN_CHANNELS_LAST = True  # Use NHWC for better conv throughput on Ampere
-TRAIN_PREFETCH_FACTOR = 4   # Batches prefetched per worker
+TRAIN_PREFETCH_FACTOR = 8   # Higher prefetch for fast GPU
 TRAIN_PERSISTENT_WORKERS = True  # Keep workers alive between epochs
 TRAIN_CUDNN_BENCHMARK = True     # Let cuDNN pick fastest algos for fixed shapes
-TRAIN_TORCH_COMPILE = False      # Set True to enable torch.compile (PyTorch 2+)
-TRAIN_TORCH_COMPILE_MODE = "default"  # "default" or "reduce-overhead"
+TRAIN_TORCH_COMPILE = True       # Enable torch.compile on A100 (PyTorch 2+)
+TRAIN_TORCH_COMPILE_MODE = "reduce-overhead"  # Lower Python overhead
 TRAIN_AUTOCast_DTYPE = "bfloat16"     # Options: "float16", "bfloat16"
 ALLOW_TF32 = True                    # Allow TF32 matmuls on Ampere+
 
@@ -173,7 +173,7 @@ COMPUTE_CALIBRATION_ERROR = True
 COMPUTE_CONVERGENCE_SPEED = True
 
 # Diversity evaluation acceleration
-DIVERSITY_USE_GPU = False  # Set True to compute diversity with torch on GPU if available
+DIVERSITY_USE_GPU = True  # Compute diversity on GPU to avoid CPU bottleneck
 DIVERSITY_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 DIVERSITY_TORCH_DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
 

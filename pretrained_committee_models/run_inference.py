@@ -12,6 +12,7 @@ import numpy as np
 from pathlib import Path
 from tqdm import tqdm
 import sys
+import torch.nn as nn
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -68,6 +69,27 @@ def compute_entropy(probs):
     return entropy
 
 
+def patch_vgg_for_mnist_runtime(model):
+    """
+    Patch VGG to handle 28x28 MNIST inputs:
+    - Remove first maxpool to avoid collapsing spatial dims
+    - Use adaptive avgpool to 1x1
+    - Adjust first classifier linear to accept 512 features
+    """
+    # Remove first maxpool if present
+    if hasattr(model, "features") and len(model.features) > 2 and isinstance(model.features[2], nn.MaxPool2d):
+        model.features[2] = nn.Identity()
+    # Ensure adaptive pooling
+    if hasattr(model, "avgpool"):
+        model.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+    # Fix classifier input dim
+    if hasattr(model, "classifier") and isinstance(model.classifier, nn.Sequential):
+        if isinstance(model.classifier[0], nn.Linear):
+            out_features = model.classifier[0].out_features
+            model.classifier[0] = nn.Linear(512, out_features)
+    return model
+
+
 def run_committee_inference(
     model_names=None,
     data_dir=None,
@@ -116,8 +138,17 @@ def run_committee_inference(
     data, labels = load_selection_pool(data_dir=str(data_dir))
     print(f"  Loaded {len(data)} samples\n")
     
-    # Create dataloader
-    dataloader = create_dataloader(data, labels, batch_size=batch_size, shuffle=False)
+    # Create dataloader (use GPU-friendly loader settings)
+    dataloader = create_dataloader(
+        data,
+        labels,
+        batch_size=batch_size,
+        shuffle=False,
+        pin_memory=True,
+        num_workers=config.TRAIN_NUM_WORKERS,
+        prefetch_factor=config.TRAIN_PREFETCH_FACTOR,
+        persistent_workers=config.TRAIN_PERSISTENT_WORKERS,
+    )
     
     # Load committee models
     print(f"Loading {len(model_names)} committee models...")
@@ -125,6 +156,9 @@ def run_committee_inference(
     for model_name in model_names:
         print(f"  Loading {model_name}...")
         models[model_name] = load_committee_model(model_name, model_dir=model_dir, device=device)
+        if model_name == "vgg11":
+            models[model_name] = patch_vgg_for_mnist_runtime(models[model_name])
+            models[model_name] = models[model_name].to(device)
         print(f"    ✓ Loaded\n")
     
     # Run inference
@@ -136,10 +170,11 @@ def run_committee_inference(
         for batch_data, batch_labels in tqdm(dataloader, desc="Inference"):
             batch_data = batch_data.to(device)
             all_labels.append(batch_labels.numpy())
-            
+
             # Get predictions from each model
             for model_name, model in models.items():
                 logits = model(batch_data)
+                # #region agent log
                 probs = F.softmax(logits, dim=1)
                 all_predictions[model_name].append(probs.cpu().numpy())
     
