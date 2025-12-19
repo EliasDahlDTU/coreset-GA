@@ -7,10 +7,11 @@ and convert them to PyTorch tensors or numpy arrays as needed.
 
 import numpy as np
 import torch
+import random
 from torch.utils.data import Dataset, DataLoader
 from pathlib import Path
 import json
-from typing import Tuple, Optional
+from typing import Tuple, Optional, Callable
 
 
 class MNISTSubsetDataset(Dataset):
@@ -23,8 +24,9 @@ class MNISTSubsetDataset(Dataset):
             labels: Full labels array (N,)
             indices: Optional subset indices. If None, uses all data.
         """
-        self.data = torch.FloatTensor(data)
-        self.labels = torch.LongTensor(labels)
+        # Ensure writable tensors to avoid non-writable NumPy warnings
+        self.data = torch.as_tensor(np.array(data, copy=True), dtype=torch.float32)
+        self.labels = torch.as_tensor(np.array(labels, copy=True), dtype=torch.long)
         
         if indices is not None:
             self.data = self.data[indices]
@@ -152,6 +154,7 @@ def create_dataloader(
     num_workers: int = 0,
     prefetch_factor: int = 2,
     persistent_workers: bool = False,
+    seed: Optional[int] = None,
 ) -> DataLoader:
     """
     Create a PyTorch DataLoader from numpy arrays.
@@ -170,6 +173,22 @@ def create_dataloader(
     # prefetch_factor is only valid when num_workers > 0
     effective_prefetch = prefetch_factor if num_workers > 0 else None
     effective_persistent = persistent_workers if num_workers > 0 else False
+
+    generator = None
+    worker_init_fn: Optional[Callable[[int], None]] = None
+    if seed is not None:
+        # Deterministic shuffling and per-worker RNG seeding.
+        generator = torch.Generator()
+        generator.manual_seed(int(seed))
+
+        def _seed_worker(worker_id: int) -> None:
+            wseed = int(seed) + int(worker_id)
+            np.random.seed(wseed)
+            random.seed(wseed)
+            torch.manual_seed(wseed)
+
+        worker_init_fn = _seed_worker
+
     return DataLoader(
         dataset,
         batch_size=batch_size,
@@ -178,6 +197,8 @@ def create_dataloader(
         num_workers=num_workers,
         prefetch_factor=effective_prefetch,
         persistent_workers=effective_persistent,
+        generator=generator,
+        worker_init_fn=worker_init_fn,
     )
 
 

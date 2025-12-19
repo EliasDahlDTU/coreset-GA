@@ -42,12 +42,37 @@ def load_model(model_path: Path, device: str = None):
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
     
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
+    # Load checkpoint (prefer weights_only where supported)
+    try:
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
+    except TypeError:
+        checkpoint = torch.load(model_path, map_location=device)
+
+    # Extract state dict
+    state_dict = None
+    if isinstance(checkpoint, dict):
+        # Common case: saved checkpoint dict
+        state_dict = checkpoint.get("model_state_dict", None)
+
+        # Fallback: checkpoint itself is the state dict
+        if state_dict is None:
+            state_dict = checkpoint if any("." in k for k in checkpoint.keys()) else None
+
+    if state_dict is None:
+        raise RuntimeError(f"Checkpoint at {model_path} does not contain a valid model_state_dict")
+
+    # Handle common wrapping prefixes (torch.compile adds _orig_mod., DataParallel adds module.)
+    def _strip_prefix(sdict, prefix):
+        if any(k.startswith(prefix) for k in sdict.keys()):
+            return {k[len(prefix):] if k.startswith(prefix) else k: v for k, v in sdict.items()}
+        return sdict
+
+    state_dict = _strip_prefix(state_dict, "_orig_mod.")
+    state_dict = _strip_prefix(state_dict, "module.")
     
     # Create model
     model = create_cnn()
-    model.load_state_dict(checkpoint['model_state_dict'])
+    model.load_state_dict(state_dict)
     model = model.to(device)
     model.eval()
     

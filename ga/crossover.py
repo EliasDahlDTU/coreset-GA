@@ -62,6 +62,51 @@ def crossover_uniform(
     return child1, child2
 
 
+def crossover_set_union(
+    parent1: np.ndarray,
+    parent2: np.ndarray,
+    pool_size: int,
+    rng: np.random.Generator = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Set-union crossover (recommended for set-valued chromosomes).
+
+    Our chromosome represents a *set* of k unique indices (order doesn't matter).
+    The older `crossover_uniform` operates position-wise on sorted arrays, which
+    introduces artifacts (early positions are always "small indices", etc.).
+
+    This crossover:
+    - Builds the union of parent indices
+    - Samples k unique indices from that union when possible
+    - If the union is smaller than k (high parent overlap), it fills the remainder
+      with random unseen indices from the global pool
+    - Produces two different children by re-sampling
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    k = len(parent1)
+    if len(parent2) != k:
+        raise ValueError(f"Parents must have same length: {len(parent1)} != {len(parent2)}")
+
+    union = np.union1d(parent1, parent2)
+
+    def _make_child() -> np.ndarray:
+        if len(union) >= k:
+            child = rng.choice(union, size=k, replace=False)
+            return np.sort(child)
+
+        # Need to fill: take all union, then fill remaining from pool (excluding union)
+        used = set(union.tolist())
+        remaining = k - len(union)
+        available = np.array([i for i in range(pool_size) if i not in used], dtype=parent1.dtype)
+        fill = rng.choice(available, size=remaining, replace=False)
+        child = np.concatenate([union.astype(parent1.dtype, copy=False), fill])
+        return np.sort(child)
+
+    return _make_child(), _make_child()
+
+
 def _fix_child(
     child: np.ndarray,
     parent1: np.ndarray,
@@ -83,9 +128,14 @@ def _fix_child(
         Fixed child chromosome with k unique indices
     """
     k = len(child)
-    
-    # Get unique values (excluding zeros if any)
-    unique_values = np.unique(child[child != 0]) if np.any(child == 0) else np.unique(child)
+
+    # NOTE:
+    # Dataset indices are in [0, pool_size). Index 0 is a valid sample id.
+    # Earlier versions treated 0 as an "uninitialized" sentinel (because children
+    # were created with np.zeros), which incorrectly discarded index 0 whenever it
+    # appeared in a child. Children are fully populated before we reach this
+    # function, so we should never treat any value as a sentinel here.
+    unique_values = np.unique(child)
     
     # If we have duplicates or missing values, fix them
     if len(unique_values) < k:

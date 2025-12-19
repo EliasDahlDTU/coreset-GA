@@ -31,7 +31,7 @@ def train_epoch(
     optimizer,
     device,
     use_amp: bool,
-    scaler: torch.cuda.amp.GradScaler,
+    scaler,
     channels_last: bool,
     non_blocking: bool
 ):
@@ -51,7 +51,7 @@ def train_epoch(
         optimizer.zero_grad()
         
         # Forward pass
-        with torch.cuda.amp.autocast(enabled=use_amp):
+        with torch.amp.autocast(device_type=device.type, enabled=use_amp):
             outputs = model(data)
             loss = criterion(outputs, labels)
         
@@ -86,7 +86,7 @@ def validate(model, dataloader, criterion, device, use_amp: bool, channels_last:
             if channels_last:
                 data = data.to(memory_format=torch.channels_last)
             
-            with torch.cuda.amp.autocast(enabled=use_amp):
+            with torch.amp.autocast(device_type=device.type, enabled=use_amp):
                 outputs = model(data)
                 loss = criterion(outputs, labels)
             
@@ -112,6 +112,7 @@ def train_cnn(
     epochs: int = None,
     batch_size: int = None,
     patience: int = None,
+    min_delta: float = None,
     device: str = None,
     use_amp: bool = None,
     channels_last: bool = None,
@@ -161,6 +162,11 @@ def train_cnn(
         batch_size = config.get_batch_size(k)
     if patience is None:
         patience = config.EARLY_STOPPING_PATIENCE
+    early_stop_enabled = config.EARLY_STOPPING_ENABLED
+    if min_delta is None:
+        min_delta = config.EARLY_STOPPING_MIN_DELTA
+    monitor = config.EARLY_STOPPING_MONITOR
+    monitor = monitor.lower()
     if device is None:
         device = config.TRAIN_DEVICE
     if seed is None:
@@ -224,6 +230,7 @@ def train_cnn(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
+        seed=seed,
     )
     val_loader = create_dataloader(
         val_data,
@@ -234,6 +241,7 @@ def train_cnn(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
+        seed=seed,
     )
     test_loader = create_dataloader(
         test_data,
@@ -244,6 +252,7 @@ def train_cnn(
         num_workers=num_workers,
         prefetch_factor=prefetch_factor,
         persistent_workers=persistent_workers,
+        seed=seed,
     )
     
     # Create model
@@ -260,7 +269,20 @@ def train_cnn(
     # Loss and optimizer
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+    if device.type == "cuda":
+        scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    else:
+        scaler = torch.amp.GradScaler("cpu", enabled=False)
+    scheduler = None
+    if config.LR_SCHEDULER_USE_PLATEAU:
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=config.LR_SCHEDULER_FACTOR,
+            patience=config.LR_SCHEDULER_PATIENCE,
+            cooldown=config.LR_SCHEDULER_COOLDOWN,
+            min_lr=config.LR_SCHEDULER_MIN_LR,
+        )
     
     # Training history
     history = {
@@ -271,7 +293,12 @@ def train_cnn(
         'epoch': []
     }
     
-    best_val_acc = 0.0
+    if monitor == "val_loss":
+        best_metric = float("inf")
+    else:
+        best_metric = -float("inf")
+    best_val_acc = -float("inf")
+    best_val_loss = float("inf")
     best_epoch = 0
     patience_counter = 0
     
@@ -300,6 +327,9 @@ def train_cnn(
             channels_last=channels_last,
             non_blocking=non_blocking,
         )
+
+        if scheduler is not None:
+            scheduler.step(val_loss)
         
         # Record history
         history['epoch'].append(epoch + 1)
@@ -314,11 +344,21 @@ def train_cnn(
                   f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.2f}%")
         
         # Early stopping
-        if val_acc > best_val_acc:
+        # Early stopping check (monitor val_accuracy or val_loss)
+        current_metric = val_acc if monitor == "val_accuracy" else val_loss
+        improved = (
+            current_metric > best_metric + min_delta
+            if monitor == "val_accuracy"
+            else current_metric < best_metric - min_delta
+        )
+
+        if improved:
+            best_metric = current_metric
             best_val_acc = val_acc
+            best_val_loss = val_loss
             best_epoch = epoch + 1
             patience_counter = 0
-            
+
             # Save best model
             model_path = get_model_path(k, subset_type, run_number)
             model_path.parent.mkdir(parents=True, exist_ok=True)
@@ -327,25 +367,44 @@ def train_cnn(
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_acc': val_acc,
+                'val_loss': val_loss,
                 'history': history
             }, model_path)
         else:
             patience_counter += 1
-            if patience_counter >= patience:
+            if early_stop_enabled and patience_counter >= patience:
                 if verbose:
-                    print(f"\nEarly stopping at epoch {epoch+1} (patience: {patience})")
+                    print(
+                        f"\nEarly stopping at epoch {epoch+1} "
+                        f"(patience: {patience}, min_delta: {min_delta}, monitor: {monitor})"
+                    )
                 break
     
     # Load best model
-    checkpoint = torch.load(model_path)
+    # Prefer weights-only load (torch >= 2.1); fallback for older versions
+    try:
+        checkpoint = torch.load(model_path, weights_only=True)
+    except TypeError:
+        checkpoint = torch.load(model_path)
     model.load_state_dict(checkpoint['model_state_dict'])
     
     # Test evaluation
-    test_loss, test_acc = validate(model, test_loader, criterion, device)
+    test_loss, test_acc = validate(
+        model,
+        test_loader,
+        criterion,
+        device,
+        use_amp=use_amp,
+        channels_last=channels_last,
+        non_blocking=non_blocking,
+    )
     
     if verbose:
         print("\n✓ Training completed!")
-        print(f"  Best validation accuracy: {best_val_acc:.2f}% (epoch {best_epoch})")
+        print(
+            f"  Best validation accuracy: {best_val_acc:.2f}% "
+            f"(epoch {best_epoch}, val_loss={best_val_loss:.4f})"
+        )
         print(f"  Test accuracy: {test_acc:.2f}%")
         print(f"  Model saved to: {model_path}")
     

@@ -47,6 +47,14 @@ def run_command(cmd, description):
 
     print(f"✓ Completed: {description}\n")
 
+def _baseline_models_exist(k: int) -> bool:
+    """Return True if all random baseline model files for k exist."""
+    for run in range(1, config.NUM_RANDOM_BASELINES + 1):
+        p = config.FINAL_MODELS_DIR / f"cnn_random_k{k}_run{run}.pth"
+        if not p.exists():
+            return False
+    return True
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run full pipeline across all k values")
@@ -65,7 +73,13 @@ def main():
     parser.add_argument("--skip-selection", action="store_true", help="Skip subset selection")
     parser.add_argument("--skip-training", action="store_true", help="Skip GA-model training")
     parser.add_argument("--skip-baselines", action="store_true", help="Skip random baselines")
+    parser.add_argument(
+        "--skip-baselines-if-exists",
+        action="store_true",
+        help="Skip training random baselines for a k if all baseline model files already exist",
+    )
     parser.add_argument("--skip-evaluation", action="store_true", help="Skip evaluation")
+    parser.add_argument("--train-full", action="store_true", help="Also train full-dataset model after per-k runs")
     parser.add_argument(
         "--device",
         type=str,
@@ -95,7 +109,7 @@ def main():
     # One-time stages
     if not args.skip_data:
         run_command(
-            ["python", "data/prepare_mnist.py", "--seed", "42"],
+            [sys.executable, "data/prepare_mnist.py", "--seed", "42"],
             "Dataset Preparation",
         )
     else:
@@ -103,7 +117,7 @@ def main():
 
     if not args.skip_committee:
         run_command(
-            ["python", "pretrained_committee_models/prepare_committee.py"],
+            [sys.executable, "pretrained_committee_models/prepare_committee.py"],
             "Committee Model Preparation",
         )
     else:
@@ -112,7 +126,7 @@ def main():
     if not args.skip_inference:
         run_command(
             [
-                "python",
+                sys.executable,
                 "pretrained_committee_models/run_inference.py",
                 "--device",
                 args.device,
@@ -127,7 +141,7 @@ def main():
     if not args.skip_embeddings:
         run_command(
             [
-                "python",
+                sys.executable,
                 "embeddings/extract_embeddings.py",
                 "--device",
                 args.device,
@@ -152,7 +166,7 @@ def main():
 
         if not args.skip_ga:
             run_command(
-                ["python", str(run_k_path)],
+                [sys.executable, str(run_k_path)],
                 f"GA Experiment (k={k})",
             )
         else:
@@ -160,7 +174,7 @@ def main():
 
         if not args.skip_selection:
             run_command(
-                ["python", "experiments/select_subset.py", str(k)],
+                [sys.executable, "experiments/select_subset.py", str(k)],
                 f"Subset Selection (k={k})",
             )
         else:
@@ -168,25 +182,37 @@ def main():
 
         if not args.skip_training:
             run_command(
-                ["python", "training/train_cnn.py", "ga", "--k", str(k)],
+                [sys.executable, "training/train_cnn.py", "ga", "--k", str(k)],
                 f"Train CNN on GA Subset (k={k})",
             )
         else:
             print(f"⏭️  Skipping GA-selected model training for k={k}")
 
-        if not args.skip_baselines:
+        skip_this_k_baselines = False
+        if args.skip_baselines_if_exists and _baseline_models_exist(k):
+            skip_this_k_baselines = True
+
+        if not args.skip_baselines and not skip_this_k_baselines:
             run_command(
-                ["python", "training/train_baselines.py", str(k)],
+                [sys.executable, "training/train_baselines.py", str(k)],
                 f"Train Random Baselines (k={k})",
             )
         else:
-            print(f"⏭️  Skipping random baselines for k={k}")
+            reason = "flagged" if args.skip_baselines else "already exist" if skip_this_k_baselines else "flagged"
+            print(f"⏭️  Skipping random baselines for k={k} ({reason})")
+
+    # Optional: train full dataset model
+    if args.train_full:
+        run_command(
+            [sys.executable, "training/train_cnn.py", "full"],
+            "Train CNN on Full Dataset",
+        )
 
     # Final evaluation
     if not args.skip_evaluation:
         eval_k_values = [str(k) for k in args.k_values]
         run_command(
-            ["python", "training/evaluate_models.py", "--k-values", *eval_k_values],
+            [sys.executable, "training/evaluate_models.py", "--k-values", *eval_k_values],
             "Evaluate All Models",
         )
     else:

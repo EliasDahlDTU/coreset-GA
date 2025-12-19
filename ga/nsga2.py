@@ -20,7 +20,7 @@ import config
 from ga.population import initialize_population
 from ga.evaluation import evaluate_population
 from ga.mutation import mutate
-from ga.crossover import crossover_uniform
+from ga.crossover import crossover_set_union
 
 # region agent log
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -364,7 +364,7 @@ def run_nsga2(
             
             # Crossover
             if rng.random() < crossover_prob:
-                child1, child2 = crossover_uniform(parent1, parent2, pool_size, rng=rng)
+                child1, child2 = crossover_set_union(parent1, parent2, pool_size, rng=rng)
             else:
                 child1, child2 = parent1.copy(), parent2.copy()
             

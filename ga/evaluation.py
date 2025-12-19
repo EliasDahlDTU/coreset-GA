@@ -12,7 +12,6 @@ from typing import Tuple, Dict
 import sys
 from pathlib import Path
 import json
-import time
 
 try:
     import torch
@@ -24,28 +23,6 @@ import config
 from data.load_data import load_selection_pool
 from embeddings.extract_embeddings import load_embeddings
 
-# region agent log
-BASE_DIR = Path(__file__).resolve().parents[1]
-_AGENT_LOG_PATH = BASE_DIR / "logs" / "debug.log"
-_AGENT_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-
-def _agent_log(hypothesis_id: str, location: str, message: str, data: Dict) -> None:
-    try:
-        payload = {
-            "sessionId": "debug-session",
-            "runId": "baseline",
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data,
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_AGENT_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload) + "\n")
-    except Exception:
-        pass
-# endregion
-
 
 # Cache for loaded data
 _difficulty_scores = None
@@ -54,12 +31,18 @@ _normalized_embeddings = None
 _torch_normalized_embeddings = None
 _labels = None
 _pool_size = None
+_coverage_sample_indices = None  # list[np.ndarray] when using multi-subsample coverage
+_coverage_sample_indices_by_class = None  # list[list[np.ndarray]] indexed [class][seed_idx]
+_difficulty_target_value = None
+_difficulty_target_sigma = None
 
 
 def _load_cached_data():
     """Load and cache difficulty scores, embeddings, and labels."""
     global _difficulty_scores, _embeddings, _labels, _pool_size
     global _normalized_embeddings, _torch_normalized_embeddings
+    global _coverage_sample_indices, _coverage_sample_indices_by_class
+    global _difficulty_target_value, _difficulty_target_sigma
     
     if _difficulty_scores is None:
         # Load difficulty scores
@@ -98,6 +81,52 @@ def _load_cached_data():
     assert len(_difficulty_scores) == len(_embeddings) == len(_labels), \
         "Difficulty scores, embeddings, and labels must have the same length"
 
+    if _difficulty_target_value is None:
+        q = float(getattr(config, "DIFFICULTY_TARGET_QUANTILE", 0.60))
+        q = float(np.clip(q, 0.0, 1.0))
+        _difficulty_target_value = float(np.quantile(np.asarray(_difficulty_scores), q))
+    if _difficulty_target_sigma is None:
+        sigma = getattr(config, "DIFFICULTY_TARGET_SIGMA", None)
+        if sigma is None:
+            sigma = float(np.std(np.asarray(_difficulty_scores)))
+            sigma = max(1e-6, 0.25 * sigma)
+        _difficulty_target_sigma = float(max(1e-6, sigma))
+
+    if _coverage_sample_indices is None:
+        # Fixed subsamples of the pool for stable/cheap coverage estimation.
+        m = min(int(getattr(config, "COVERAGE_SAMPLE_SIZE", 4096)), len(_labels))
+        seeds = getattr(config, "COVERAGE_SAMPLE_SEEDS", None)
+        if seeds is None:
+            # Backward compatibility: single seed
+            seed = int(getattr(config, "COVERAGE_SAMPLE_SEED", 42))
+            seeds = [seed]
+        _coverage_sample_indices = []
+        for s in seeds:
+            rng = np.random.default_rng(int(s))
+            _coverage_sample_indices.append(rng.choice(len(_labels), size=m, replace=False))
+
+    if _coverage_sample_indices_by_class is None and getattr(config, "COVERAGE_CLASS_CONDITIONAL", False):
+        num_classes = int(getattr(config, "NUM_CLASSES", int(np.max(_labels)) + 1))
+        per_class_m = getattr(config, "COVERAGE_PER_CLASS_SAMPLE_SIZE", None)
+        if per_class_m is None:
+            per_class_m = max(1, int(m // num_classes))
+        per_class_m = int(min(per_class_m, len(_labels)))
+
+        # Precompute indices for each class
+        class_pools = [np.flatnonzero(_labels == c) for c in range(num_classes)]
+        _coverage_sample_indices_by_class = [[None for _ in range(len(_coverage_sample_indices))] for _ in range(num_classes)]
+
+        # For each seed's RNG, sample per class from that class's pool
+        for seed_i, s in enumerate(seeds):
+            rng = np.random.default_rng(int(s))
+            for c in range(num_classes):
+                pool = class_pools[c]
+                if len(pool) == 0:
+                    _coverage_sample_indices_by_class[c][seed_i] = np.array([], dtype=int)
+                    continue
+                take = min(per_class_m, len(pool))
+                _coverage_sample_indices_by_class[c][seed_i] = rng.choice(pool, size=take, replace=False)
+
 
 def difficulty_objective(indices: np.ndarray) -> float:
     """
@@ -119,8 +148,24 @@ def difficulty_objective(indices: np.ndarray) -> float:
     # Get difficulty scores for the subset
     subset_difficulties = _difficulty_scores[indices]
     
-    # Return mean difficulty
-    return float(np.mean(subset_difficulties))
+    mean_diff = float(np.mean(subset_difficulties))
+
+    # For small k, prefer "moderate" difficulty rather than maximizing the hardest samples.
+    mode = getattr(config, "DIFFICULTY_MODE", "high")
+    small_thr = getattr(config, "DIFFICULTY_SMALL_K_THRESHOLD", None)
+    small_mode = getattr(config, "DIFFICULTY_MODE_SMALL_K", None)
+    if small_thr is not None and small_mode is not None and len(indices) <= int(small_thr):
+        mode = small_mode
+
+    if mode == "target_mean":
+        # Gaussian bump around a target value (in [0,1] after exp), maximize.
+        mu = float(_difficulty_target_value)
+        sigma = float(_difficulty_target_sigma)
+        z = (mean_diff - mu) / sigma
+        return float(np.exp(-0.5 * z * z))
+
+    # Default: maximize mean difficulty
+    return mean_diff
 
 
 def diversity_objective(indices: np.ndarray) -> float:
@@ -139,8 +184,155 @@ def diversity_objective(indices: np.ndarray) -> float:
     
     if len(indices) < 2:
         return 0.0
+
+    # Option: representativeness / coverage objective (often more aligned with training)
+    if getattr(config, "DIVERSITY_MODE", "intra") == "coverage":
+        _load_cached_data()
+        use_torch = _torch_normalized_embeddings is not None
+        agg = getattr(config, "COVERAGE_AGGREGATION", "max")
+        topk = int(getattr(config, "COVERAGE_TOPK", 5))
+        tau = float(getattr(config, "COVERAGE_SOFTMAX_TAU", 0.07))
+        weight_by_diff = bool(getattr(config, "COVERAGE_WEIGHT_BY_DIFFICULTY", False))
+
+        def _aggregate_sims_torch(sims: "torch.Tensor") -> "torch.Tensor":
+            # sims: (m, k)
+            if agg == "max":
+                return sims.max(dim=1).values
+            if agg == "topk":
+                k_eff = min(topk, sims.shape[1])
+                return sims.topk(k_eff, dim=1).values.mean(dim=1)
+            if agg == "softmax":
+                t = max(1e-6, tau)
+                # smooth max: t * logsumexp(sims / t)
+                return t * torch.logsumexp(sims / t, dim=1)
+            # fallback
+            return sims.max(dim=1).values
+
+        def _aggregate_sims_np(sims: np.ndarray) -> np.ndarray:
+            # sims: (m, k)
+            if agg == "max":
+                return np.max(sims, axis=1)
+            if agg == "topk":
+                k_eff = min(topk, sims.shape[1])
+                # partial sort for topk
+                part = np.partition(sims, -k_eff, axis=1)[:, -k_eff:]
+                return np.mean(part, axis=1)
+            if agg == "softmax":
+                t = max(1e-6, tau)
+                x = sims / t
+                m = np.max(x, axis=1, keepdims=True)
+                lse = np.log(np.sum(np.exp(x - m), axis=1) + 1e-12) + m.squeeze(1)
+                return t * lse
+            return np.max(sims, axis=1)
+
+        # Class-conditional coverage: compute per class, then average.
+        if getattr(config, "COVERAGE_CLASS_CONDITIONAL", False):
+            num_classes = int(getattr(config, "NUM_CLASSES", 10))
+            subset_labels = _labels[indices]
+            per_class_scores = []
+
+            if use_torch:
+                # Pre-slice once
+                for c in range(num_classes):
+                    class_mask = (subset_labels == c)
+                    if not np.any(class_mask):
+                        per_class_scores.append(0.0)
+                        continue
+
+                    class_indices = indices[class_mask]
+                    subset_emb_c = _torch_normalized_embeddings[class_indices]
+
+                    seed_means = []
+                    for sample_idx in _coverage_sample_indices_by_class[c]:
+                        if sample_idx is None or len(sample_idx) == 0:
+                            continue
+                        sample_emb = _torch_normalized_embeddings[sample_idx]
+                        sims = sample_emb @ subset_emb_c.T
+                        agg_vals = _aggregate_sims_torch(sims)
+                        if weight_by_diff:
+                            w = torch.as_tensor(_difficulty_scores[sample_idx], device=agg_vals.device, dtype=agg_vals.dtype)
+                            w = (w - w.min()) / (w.max() - w.min() + 1e-12)
+                            w = w + 1e-3
+                            seed_means.append((agg_vals * w).sum() / w.sum())
+                        else:
+                            seed_means.append(agg_vals.mean())
+
+                    if len(seed_means) == 0:
+                        per_class_scores.append(0.0)
+                    else:
+                        mean_max_sim_c = float(torch.stack(seed_means).mean().item())
+                        per_class_scores.append(float(np.clip((mean_max_sim_c + 1.0) / 2.0, 0.0, 1.0)))
+            else:
+                for c in range(num_classes):
+                    class_mask = (subset_labels == c)
+                    if not np.any(class_mask):
+                        per_class_scores.append(0.0)
+                        continue
+
+                    class_indices = indices[class_mask]
+                    subset_emb_c = _normalized_embeddings[class_indices]
+
+                    seed_means = []
+                    for sample_idx in _coverage_sample_indices_by_class[c]:
+                        if sample_idx is None or len(sample_idx) == 0:
+                            continue
+                        sample_emb = _normalized_embeddings[sample_idx]
+                        sims = np.dot(sample_emb, subset_emb_c.T)
+                        agg_vals = _aggregate_sims_np(sims)
+                        if weight_by_diff:
+                            w = _difficulty_scores[sample_idx].astype(np.float64)
+                            w = (w - w.min()) / (w.max() - w.min() + 1e-12)
+                            w = w + 1e-3
+                            seed_means.append(float(np.sum(agg_vals * w) / np.sum(w)))
+                        else:
+                            seed_means.append(float(np.mean(agg_vals)))
+
+                    if len(seed_means) == 0:
+                        per_class_scores.append(0.0)
+                    else:
+                        mean_max_sim_c = float(np.mean(seed_means))
+                        per_class_scores.append(float(np.clip((mean_max_sim_c + 1.0) / 2.0, 0.0, 1.0)))
+
+            return float(np.mean(per_class_scores)) if len(per_class_scores) else 0.0
+
+        # Global coverage: average across multiple subsamples
+        sample_sets = _coverage_sample_indices
+
+        if use_torch:
+            subset_embeddings = _torch_normalized_embeddings[indices]
+            mean_max_sims = []
+            for sample_idx in sample_sets:
+                sample_embeddings = _torch_normalized_embeddings[sample_idx]
+                # (m,d) @ (d,k) -> (m,k), then take max over subset for each sample point
+                sims = sample_embeddings @ subset_embeddings.T
+                agg_vals = _aggregate_sims_torch(sims)
+                if weight_by_diff:
+                    w = torch.as_tensor(_difficulty_scores[sample_idx], device=agg_vals.device, dtype=agg_vals.dtype)
+                    w = (w - w.min()) / (w.max() - w.min() + 1e-12)
+                    w = w + 1e-3
+                    mean_max_sims.append((agg_vals * w).sum() / w.sum())
+                else:
+                    mean_max_sims.append(agg_vals.mean())
+            mean_max_sim = float(torch.stack(mean_max_sims).mean().item())
+        else:
+            subset_embeddings = _normalized_embeddings[indices]
+            mean_max_sims = []
+            for sample_idx in sample_sets:
+                sample_embeddings = _normalized_embeddings[sample_idx]
+                sims = np.dot(sample_embeddings, subset_embeddings.T)
+                agg_vals = _aggregate_sims_np(sims)
+                if weight_by_diff:
+                    w = _difficulty_scores[sample_idx].astype(np.float64)
+                    w = (w - w.min()) / (w.max() - w.min() + 1e-12)
+                    w = w + 1e-3
+                    mean_max_sims.append(float(np.sum(agg_vals * w) / np.sum(w)))
+                else:
+                    mean_max_sims.append(float(np.mean(agg_vals)))
+            mean_max_sim = float(np.mean(mean_max_sims))
+
+        # Cosine similarity is in [-1, 1]. Map to [0, 1] for nicer scaling.
+        return float(np.clip((mean_max_sim + 1.0) / 2.0, 0.0, 1.0))
     
-    start = time.time()
     use_torch = _torch_normalized_embeddings is not None
     if use_torch:
         subset_embeddings = _torch_normalized_embeddings[indices]
@@ -169,17 +361,10 @@ def diversity_objective(indices: np.ndarray) -> float:
         upper_triangle = cosine_sim_matrix[np.triu_indices(n, k=1)]
         mean_cosine_sim = np.mean(upper_triangle)
     
-    # Diversity = 1 - mean cosine similarity
+    # Diversity = 1 - mean cosine similarity, reshape with sqrt to emphasize spread
     diversity = 1.0 - mean_cosine_sim
-    duration_ms = (time.time() - start) * 1000
-    _agent_log(
-        hypothesis_id="H1",
-        location="ga/evaluation.py:diversity_objective",
-        message="diversity timing",
-        data={"k": int(len(indices)), "duration_ms": duration_ms, "torch": use_torch},
-    )
-    
-    return float(np.clip(diversity, 0.0, 1.0))
+    diversity = float(np.clip(diversity, 0.0, 1.0)) ** 0.5
+    return diversity
 
 
 def balance_objective(indices: np.ndarray) -> float:
@@ -206,6 +391,10 @@ def balance_objective(indices: np.ndarray) -> float:
     num_classes = config.NUM_CLASSES
     class_counts = np.bincount(subset_labels, minlength=num_classes)
     class_proportions = class_counts / len(indices)
+    
+    # Hard constraint: must cover every class
+    if np.any(class_counts == 0):
+        return 0.0
     
     # Ideal uniform distribution
     ideal_proportion = 1.0 / num_classes
@@ -239,6 +428,9 @@ def evaluate_fitness(indices: np.ndarray) -> Tuple[float, float, float]:
     diversity = diversity_objective(indices)
     balance = balance_objective(indices)
     
+    if balance == 0.0:
+        # Infeasible solution (missing class coverage)
+        return -1e9, -1e9, -1e9
     return (difficulty, diversity, balance)
 
 

@@ -2,9 +2,9 @@
 Mutation operators for genetic algorithm.
 
 Implements three mutation strategies:
-1. Index replacement (70%): replace 1-5 random indices
-2. Segment shuffle (20%): shuffle a random 10-20% segment
-3. Swap mutation (10%): swap two indices
+1. Index replacement (70%): replace a random number of indices (scaled with k)
+2. Block replacement (20%): replace a random 10-20% block with fresh indices
+3. Small replacement (10%): replace 2 indices with fresh ones
 """
 
 import numpy as np
@@ -62,10 +62,16 @@ def mutate_index_replacement(
         rng = np.random.default_rng()
     
     if num_replacements is None:
-        num_replacements = rng.integers(
-            config.MUTATION_MIN_REPLACEMENTS,
-            config.MUTATION_MAX_REPLACEMENTS + 1
-        )
+        # Scale mutation strength with subset size.
+        # For large k (e.g. 1000), replacing only 1-8 points barely explores the space.
+        k = len(chromosome)
+        min_rep = max(config.MUTATION_MIN_REPLACEMENTS, int(round(0.005 * k)))  # 0.5% of k
+        max_rep = max(config.MUTATION_MAX_REPLACEMENTS, int(round(0.02 * k)))   # 2% of k
+        min_rep = min(min_rep, k)
+        max_rep = min(max_rep, k)
+        if max_rep < min_rep:
+            max_rep = min_rep
+        num_replacements = int(rng.integers(min_rep, max_rep + 1))
     
     num_replacements = min(num_replacements, len(chromosome))
     
@@ -117,7 +123,11 @@ def mutate_segment_shuffle(
     rng: np.random.Generator = None
 ) -> np.ndarray:
     """
-    Mutation: shuffle a random segment of the chromosome.
+    Mutation: replace a random contiguous block with fresh indices.
+
+    NOTE: Chromosomes represent *sets* of indices. Shuffling or swapping does not
+    change the set, so those operators are no-ops. This operator is intentionally
+    a "block replacement" to make it meaningful for set-valued chromosomes.
     
     Args:
         chromosome: Original chromosome
@@ -142,20 +152,28 @@ def mutate_segment_shuffle(
     
     segment_size = min(segment_size, len(chromosome))
     
-    # Create a copy
     mutated = chromosome.copy()
-    
-    # Select random segment
-    start_idx = rng.integers(0, len(mutated) - segment_size + 1)
-    end_idx = start_idx + segment_size
-    
-    # Shuffle the segment
-    segment = mutated[start_idx:end_idx]
-    rng.shuffle(segment)
-    mutated[start_idx:end_idx] = segment
-    
-    # No need to enforce uniqueness (shuffling doesn't change values)
-    return np.sort(mutated)
+
+    # Select random block (positions in the chromosome, not dataset index range)
+    start_idx = int(rng.integers(0, len(mutated) - segment_size + 1))
+    end_idx = start_idx + int(segment_size)
+
+    # Build available indices (exclude current set, but allow reusing the ones we're removing)
+    # This increases acceptance vs forbidding all current indices.
+    removed = set(mutated[start_idx:end_idx].tolist())
+    used = set(mutated.tolist())
+    used_minus_removed = used - removed
+
+    available_mask = np.ones(pool_size, dtype=bool)
+    if len(used_minus_removed) > 0:
+        available_mask[np.fromiter(used_minus_removed, dtype=np.int64)] = False
+    available_indices = np.flatnonzero(available_mask)
+
+    fill = rng.choice(available_indices, size=(end_idx - start_idx), replace=False)
+    mutated[start_idx:end_idx] = fill
+
+    mutated = enforce_uniqueness(mutated, pool_size, rng=rng)
+    return mutated
 
 
 def mutate_swap(
@@ -164,7 +182,9 @@ def mutate_swap(
     rng: np.random.Generator = None
 ) -> np.ndarray:
     """
-    Mutation: swap two random indices.
+    Mutation: replace two random indices with fresh ones (small replacement).
+
+    NOTE: A literal swap is a no-op for set-valued chromosomes after sorting.
     
     Args:
         chromosome: Original chromosome
@@ -180,15 +200,23 @@ def mutate_swap(
     if len(chromosome) < 2:
         return chromosome.copy()
     
-    # Create a copy
     mutated = chromosome.copy()
-    
-    # Select two random indices to swap
-    idx1, idx2 = rng.choice(len(mutated), size=2, replace=False)
-    mutated[idx1], mutated[idx2] = mutated[idx2], mutated[idx1]
-    
-    # No need to enforce uniqueness (swapping doesn't change values)
-    return np.sort(mutated)
+
+    # Choose two positions to replace
+    idxs = rng.choice(len(mutated), size=2, replace=False)
+    removed = set(mutated[idxs].tolist())
+    used = set(mutated.tolist())
+    used_minus_removed = used - removed
+
+    available_mask = np.ones(pool_size, dtype=bool)
+    if len(used_minus_removed) > 0:
+        available_mask[np.fromiter(used_minus_removed, dtype=np.int64)] = False
+    available_indices = np.flatnonzero(available_mask)
+
+    new_vals = rng.choice(available_indices, size=2, replace=False)
+    mutated[idxs] = new_vals
+    mutated = enforce_uniqueness(mutated, pool_size, rng=rng)
+    return mutated
 
 
 def mutate(

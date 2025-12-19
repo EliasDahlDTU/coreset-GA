@@ -4,6 +4,7 @@ Select best subset from Pareto front.
 Implements subset selection strategies:
 1. Weighted score (default): weighted sum of normalized objectives
 2. Ideal point: closest to utopian point (max difficulty, max diversity, max balance)
+3. Maximin: maximize the minimum (weighted) normalized objective (more "representative"/balanced)
 """
 
 import pickle
@@ -15,6 +16,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 from data.load_data import load_selection_pool, get_class_distribution
+from ga.evaluation import evaluate_fitness
 
 
 def load_pareto_front(k: int, results_dir: Path = None) -> dict:
@@ -59,20 +61,23 @@ def normalize_objectives(fitnesses: list) -> np.ndarray:
         return np.array([])
     
     fitness_array = np.array(fitnesses)
-    
-    # Normalize each objective to [0, 1]
-    # Get min and max for each objective
-    obj_mins = np.min(fitness_array, axis=0)
-    obj_maxs = np.max(fitness_array, axis=0)
-    obj_ranges = obj_maxs - obj_mins
-    
-    # Avoid division by zero
-    obj_ranges = np.where(obj_ranges == 0, 1, obj_ranges)
-    
-    # Normalize
-    normalized = (fitness_array - obj_mins) / obj_ranges
-    
-    return normalized
+
+    # Min-max normalize each objective to [0, 1] (per Pareto front).
+    # This matches the docstring and makes weighted-score selection easier to reason about.
+    obj_min = np.min(fitness_array, axis=0)
+    obj_max = np.max(fitness_array, axis=0)
+    denom = obj_max - obj_min
+
+    # If an objective is constant across the Pareto front, give it a neutral 0.5 everywhere
+    # so it neither helps nor hurts in weighted scoring.
+    normalized = np.empty_like(fitness_array, dtype=np.float64)
+    for j in range(fitness_array.shape[1]):
+        if denom[j] == 0:
+            normalized[:, j] = 0.5
+        else:
+            normalized[:, j] = (fitness_array[:, j] - obj_min[j]) / denom[j]
+
+    return np.clip(normalized, 0.0, 1.0)
 
 
 def select_by_weighted_score(
@@ -180,12 +185,62 @@ def select_by_ideal_point(
     return selected_chromosome, selection_info
 
 
+def select_by_maximin(
+    chromosomes: list,
+    fitnesses: list,
+    weights: dict = None
+) -> Tuple[np.ndarray, dict]:
+    """
+    Select subset by maximizing the minimum (weighted) normalized objective.
+
+    Intuition: weighted sum can pick a solution that is great in 1-2 objectives but
+    mediocre in another. Maximin tends to pick a more "representative"/balanced
+    point on the Pareto front.
+    """
+    if weights is None:
+        weights = config.SUBSET_SELECTION_WEIGHTS
+
+    if len(chromosomes) == 0:
+        raise ValueError("No chromosomes provided")
+
+    normalized_fitnesses = normalize_objectives(fitnesses)  # (n,3) in [0,1]
+    w = np.array([weights["difficulty"], weights["diversity"], weights["balance"]], dtype=np.float64)
+    w = np.where(w < 0, 0.0, w)
+    if float(w.sum()) == 0.0:
+        w = np.array([1.0, 1.0, 1.0], dtype=np.float64)
+    w = w / w.sum()
+
+    # Apply weights as scaling, then maximize the minimum component
+    weighted = normalized_fitnesses * w[None, :]
+    scores = np.min(weighted, axis=1)
+
+    best_idx = int(np.argmax(scores))
+    selected_chromosome = chromosomes[best_idx]
+    selected_fitness = fitnesses[best_idx]
+
+    selection_info = {
+        "method": "maximin",
+        "weights": {"difficulty": float(w[0]), "diversity": float(w[1]), "balance": float(w[2])},
+        "score": float(scores[best_idx]),
+        "fitness": {
+            "difficulty": float(selected_fitness[0]),
+            "diversity": float(selected_fitness[1]),
+            "balance": float(selected_fitness[2]),
+        },
+        "rank": int(best_idx),
+        "total_candidates": len(chromosomes),
+    }
+
+    return selected_chromosome, selection_info
+
+
 def select_subset(
     k: int,
     method: str = 'weighted_score',
     weights: dict = None,
     results_dir: Path = None,
-    save: bool = True
+    save: bool = True,
+    recompute_fitness: bool = False
 ) -> Tuple[np.ndarray, dict]:
     """
     Select best subset from Pareto front for a given k.
@@ -196,6 +251,7 @@ def select_subset(
         weights: Weights for weighted_score method. If None, uses config.
         results_dir: Results directory. If None, uses config.RESULTS_DIR
         save: Whether to save selected subset
+        recompute_fitness: If True, recompute objectives for Pareto chromosomes using current config.
         
     Returns:
         Tuple of (selected_chromosome, selection_info)
@@ -208,6 +264,26 @@ def select_subset(
     
     if len(pareto_chromosomes) == 0:
         raise ValueError(f"No Pareto-optimal solutions found for k={k}")
+
+    if recompute_fitness:
+        # Useful for sweeping objective variants (coverage agg, difficulty weighting, etc.)
+        # without re-running NSGA-II. Note this no longer represents the true Pareto
+        # front for the new objective, but is a fast approximation.
+        pareto_fitnesses = [evaluate_fitness(chrom) for chrom in pareto_chromosomes]
+    
+    # Default weights: for small k, prefer balance/representativeness; for large k, downweight balance.
+    if weights is None:
+        small_thr = getattr(config, "SUBSET_SELECTION_SMALL_K_THRESHOLD", None)
+        small_w = getattr(config, "SUBSET_SELECTION_WEIGHTS_SMALL_K", None)
+        large_thr = getattr(config, "SUBSET_SELECTION_LARGE_K_THRESHOLD", None)
+        large_w = getattr(config, "SUBSET_SELECTION_WEIGHTS_LARGE_K", None)
+
+        if small_thr is not None and small_w is not None and k <= int(small_thr):
+            weights = small_w
+        elif large_thr is not None and large_w is not None and k >= int(large_thr):
+            weights = large_w
+        else:
+            weights = config.SUBSET_SELECTION_WEIGHTS
     
     # Select subset
     if method == 'weighted_score':
@@ -218,8 +294,14 @@ def select_subset(
         selected_chromosome, selection_info = select_by_ideal_point(
             pareto_chromosomes, pareto_fitnesses
         )
+    elif method == 'maximin':
+        selected_chromosome, selection_info = select_by_maximin(
+            pareto_chromosomes, pareto_fitnesses, weights
+        )
     else:
-        raise ValueError(f"Unknown selection method: {method}. Use 'weighted_score' or 'ideal_point'")
+        raise ValueError(
+            f"Unknown selection method: {method}. Use 'weighted_score', 'ideal_point', or 'maximin'"
+        )
     
     # Add metadata
     selection_info['k'] = k
@@ -308,13 +390,21 @@ if __name__ == "__main__":
         "--method",
         type=str,
         default="weighted_score",
-        choices=["weighted_score", "ideal_point"],
+        choices=["weighted_score", "ideal_point", "maximin"],
         help="Selection method (default: weighted_score)"
     )
+    parser.add_argument("--w-difficulty", type=float, default=None, help="Override weight for difficulty objective")
+    parser.add_argument("--w-diversity", type=float, default=None, help="Override weight for diversity objective")
+    parser.add_argument("--w-balance", type=float, default=None, help="Override weight for balance objective")
     parser.add_argument(
         "--no-save",
         action="store_true",
         help="Don't save selected subset"
+    )
+    parser.add_argument(
+        "--recompute-fitness",
+        action="store_true",
+        help="Recompute objectives for Pareto chromosomes using current config (for fast sweeps)"
     )
     parser.add_argument(
         "--visualize",
@@ -325,11 +415,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     print(f"Selecting subset for k={args.k} using method '{args.method}'...")
-    
+
+    weights = None
+    if args.w_difficulty is not None or args.w_diversity is not None or args.w_balance is not None:
+        wd = float(args.w_difficulty) if args.w_difficulty is not None else config.SUBSET_SELECTION_WEIGHTS["difficulty"]
+        wv = float(args.w_diversity) if args.w_diversity is not None else config.SUBSET_SELECTION_WEIGHTS["diversity"]
+        wb = float(args.w_balance) if args.w_balance is not None else config.SUBSET_SELECTION_WEIGHTS["balance"]
+        # Normalize to sum to 1 for easier interpretability
+        s = max(1e-12, wd + wv + wb)
+        weights = {"difficulty": wd / s, "diversity": wv / s, "balance": wb / s}
+
     selected_chromosome, selection_info = select_subset(
         k=args.k,
         method=args.method,
-        save=not args.no_save
+        weights=weights,
+        save=not args.no_save,
+        recompute_fitness=args.recompute_fitness,
     )
     
     print(f"\n✓ Selected subset:")

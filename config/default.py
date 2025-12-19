@@ -6,6 +6,7 @@ Centralizes all hyperparameters, paths, and settings for reproducibility.
 
 from pathlib import Path
 import torch
+import os
 
 # ============================================================================
 # PATHS
@@ -50,9 +51,9 @@ IMAGE_SHAPE = (1, 28, 28)
 # GENETIC ALGORITHM SETTINGS
 # ============================================================================
 
-# Population and evolution
-GA_POPULATION_SIZE = 30
-GA_GENERATIONS = 20
+# Population and evolution (high-budget search)
+GA_POPULATION_SIZE = 256
+GA_GENERATIONS = 200
 GA_SEED = 42
 
 # Mutation operator probabilities
@@ -62,15 +63,17 @@ MUTATION_SWAP_PROB = 0.10              # Swap two indices
 
 # Mutation parameters
 MUTATION_MIN_REPLACEMENTS = 1
-MUTATION_MAX_REPLACEMENTS = 5
+MUTATION_MAX_REPLACEMENTS = 8  # Broader exploration for small-k runs
 MUTATION_SEGMENT_MIN_PCT = 0.10
 MUTATION_SEGMENT_MAX_PCT = 0.20
 
 # Crossover
-CROSSOVER_PROB = 0.8  # Probability of crossover
+CROSSOVER_PROB = 0.9  # More crossover to mix good genes under higher budget
 
 # Selection
-TOURNAMENT_SIZE = 2
+# Tournament size controls selection pressure. With set-valued chromosomes and noisy objectives,
+# slightly higher pressure tends to help the search converge to better fronts.
+TOURNAMENT_SIZE = 4
 
 # NSGA-II settings
 NSGA2_ETA_C = 20.0  # Crossover distribution index
@@ -115,8 +118,8 @@ EMBEDDING_BATCH_SIZE = 512  # Safe on A100 20GB for MNIST-sized inputs
 # Training hyperparameters
 TRAIN_LEARNING_RATE = 0.001
 TRAIN_WEIGHT_DECAY = 1e-6
-TRAIN_EPOCHS = 50
-TRAIN_BATCH_SIZE_BASE = 128  # Cap; actual batch = min(base, k//2)
+TRAIN_EPOCHS = 150  # Longer training; budget allows deeper convergence
+TRAIN_BATCH_SIZE_BASE = 512  # Cap; actual batch = min(base, k//2)
 TRAIN_NUM_WORKERS = 8       # A100 host can typically sustain this
 TRAIN_PIN_MEMORY = True     # Pin host memory for faster H2D
 TRAIN_NON_BLOCKING = True   # Non-blocking H2D copies
@@ -125,15 +128,24 @@ TRAIN_CHANNELS_LAST = True  # Use NHWC for better conv throughput on Ampere
 TRAIN_PREFETCH_FACTOR = 8   # Higher prefetch for fast GPU
 TRAIN_PERSISTENT_WORKERS = True  # Keep workers alive between epochs
 TRAIN_CUDNN_BENCHMARK = True     # Let cuDNN pick fastest algos for fixed shapes
-TRAIN_TORCH_COMPILE = True       # Enable torch.compile on A100 (PyTorch 2+)
+TRAIN_TORCH_COMPILE = True      
 TRAIN_TORCH_COMPILE_MODE = "reduce-overhead"  # Lower Python overhead
 TRAIN_AUTOCast_DTYPE = "bfloat16"     # Options: "float16", "bfloat16"
 ALLOW_TF32 = True                    # Allow TF32 matmuls on Ampere+
 
-# Early stopping
-EARLY_STOPPING_PATIENCE = 10
-EARLY_STOPPING_MONITOR = "val_accuracy"
-EARLY_STOPPING_MODE = "max"
+# Early stopping (stable defaults)
+EARLY_STOPPING_ENABLED = False  # Run full epochs; rely on best-checkpoint selection
+EARLY_STOPPING_PATIENCE = 20    # Unused when disabled; higher if re-enabled
+EARLY_STOPPING_MONITOR = "val_loss"  # "val_loss" is smoother than accuracy
+EARLY_STOPPING_MODE = "min"
+EARLY_STOPPING_MIN_DELTA = 0.0   # Track any improvement when saving best
+
+# LR scheduler (ReduceLROnPlateau)
+LR_SCHEDULER_USE_PLATEAU = True
+LR_SCHEDULER_FACTOR = 0.5
+LR_SCHEDULER_PATIENCE = 2
+LR_SCHEDULER_COOLDOWN = 1
+LR_SCHEDULER_MIN_LR = 1e-5
 
 # Model architecture
 CNN_CHANNELS = [32, 64, 128]  # Conv block channels
@@ -150,7 +162,7 @@ TRAIN_SEED = 42
 # BASELINE SETTINGS
 # ============================================================================
 
-# Number of random baseline runs
+# Number of random baseline runs (stronger comparison)
 NUM_RANDOM_BASELINES = 5
 
 # Baseline random seed
@@ -167,6 +179,25 @@ SUBSET_SELECTION_WEIGHTS = {
     "balance": 1.0 / 3.0
 }
 
+# For small subsets, over-emphasizing difficulty can hurt generalization (you end up picking
+# mostly hard/ambiguous points). These defaults bias towards class coverage + representativeness.
+SUBSET_SELECTION_SMALL_K_THRESHOLD = 200
+SUBSET_SELECTION_WEIGHTS_SMALL_K = {
+    "difficulty": 1.0 / 3.0 ,
+    "diversity": 1.0 / 3.0,
+    "balance": 1.0 / 3.0,
+}
+
+# For larger subsets, balance is usually already satisfied (and near-uniform),
+# and over-weighting it can hurt by selecting less informative / less representative points.
+# These defaults were tuned on MNIST k=1000 and improved GA-selected CNN accuracy.
+SUBSET_SELECTION_LARGE_K_THRESHOLD = 500
+SUBSET_SELECTION_WEIGHTS_LARGE_K = {
+    "difficulty": 1.0 / 3.0 ,
+    "diversity": 1.0 / 3.0,
+    "balance": 1.0 / 3.0,
+}
+
 # Evaluation metrics
 COMPUTE_CLASS_WISE_F1 = True
 COMPUTE_CALIBRATION_ERROR = True
@@ -175,7 +206,63 @@ COMPUTE_CONVERGENCE_SPEED = True
 # Diversity evaluation acceleration
 DIVERSITY_USE_GPU = True  # Compute diversity on GPU to avoid CPU bottleneck
 DIVERSITY_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-DIVERSITY_TORCH_DTYPE = "bfloat16"  # Options: "float16", "bfloat16", "float32"
+# NOTE: Diversity drives GA selection. Low precision here can inject noise and make the GA
+# behave closer to random search. Use float32 by default for stability; you can switch back
+# to bfloat16/float16 if you need speed and are OK with noisier fitness.
+DIVERSITY_TORCH_DTYPE = "float32"  # Options: "float16", "bfloat16", "float32"
+
+# Diversity objective mode:
+# - "intra": maximize spread within the subset (1 - mean cosine similarity)
+# - "coverage": maximize representativeness of the whole pool (mean max cosine similarity
+#               from a sampled pool set to the subset). Often better aligned with
+#               coreset training than pure intra-diversity.
+DIVERSITY_MODE = "coverage"  # Options: "intra", "coverage"
+# Coverage objective is an estimate. Defaults use a single fixed subsample for speed/stability.
+# You can average multiple subsamples by adding more seeds to COVERAGE_SAMPLE_SEEDS.
+COVERAGE_SAMPLE_SIZE = 4096  # Pool points per subsample; higher = more stable, slower
+COVERAGE_SAMPLE_SEEDS = [42]
+
+# Class-conditional coverage:
+# When enabled, coverage is computed per class by matching sampled points of class c
+# only against subset points of class c, then averaging across classes. This is often
+# better aligned with classification (MNIST/CIFAR) than global coverage.
+COVERAGE_CLASS_CONDITIONAL = False
+
+# If set, overrides per-class sample size; otherwise derived from COVERAGE_SAMPLE_SIZE / NUM_CLASSES.
+COVERAGE_PER_CLASS_SAMPLE_SIZE = None
+
+# Coverage aggregation:
+# - "max": mean of max similarity to subset (1-NN coverage). Fast, but can be spiky.
+# - "topk": mean of top-k similarities (more stable than pure max).
+# - "softmax": smooth-max via log-sum-exp with temperature (t -> 0 approximates max).
+# Env overrides (for sweeps): CORESETGA_COVERAGE_AGGREGATION / _TOPK / _TAU
+COVERAGE_AGGREGATION = os.getenv("CORESETGA_COVERAGE_AGGREGATION", "max")  # Options: "max", "topk", "softmax"
+try:
+    COVERAGE_TOPK = int(os.getenv("CORESETGA_COVERAGE_TOPK", "5"))
+except Exception:
+    COVERAGE_TOPK = 5
+try:
+    COVERAGE_SOFTMAX_TAU = float(os.getenv("CORESETGA_COVERAGE_SOFTMAX_TAU", "0.07"))
+except Exception:
+    COVERAGE_SOFTMAX_TAU = 0.07
+
+# Optionally weight sampled points by difficulty (hard points matter more for representativeness).
+# This can improve alignment with training accuracy on some runs/datasets.
+_cov_w = os.getenv("CORESETGA_COVERAGE_WEIGHT_BY_DIFFICULTY", "0").strip().lower()
+COVERAGE_WEIGHT_BY_DIFFICULTY = _cov_w in ("1", "true", "yes", "y", "on")
+
+# Difficulty objective shaping:
+# Maximizing "hardest" samples can hurt training at very small k (you overfit to ambiguous digits).
+# For small k, we can instead target a moderate difficulty level.
+DIFFICULTY_MODE = "high"  # Options: "high", "target_mean"
+DIFFICULTY_SMALL_K_THRESHOLD = 200
+DIFFICULTY_MODE_SMALL_K = "target_mean"
+DIFFICULTY_TARGET_QUANTILE = 0.60   # target difficulty value as a quantile of pool difficulty
+DIFFICULTY_TARGET_SIGMA = None      # if None, derived from global difficulty std
+
+# GA initialization. Stratified init can be toggled for experimentation, but default stays off
+# since it can reduce exploration diversity depending on k/dataset.
+GA_STRATIFIED_INIT = False
 
 # ============================================================================
 # RESULTS AND LOGGING

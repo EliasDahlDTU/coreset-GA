@@ -13,6 +13,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import config
 
 
+_cached_labels = None
+
+
+def _get_labels():
+    global _cached_labels
+    if _cached_labels is None:
+        from data.load_data import load_selection_pool
+        _, _cached_labels = load_selection_pool()
+    return _cached_labels
+
+
 def create_chromosome(k: int, pool_size: int, rng: np.random.Generator = None) -> np.ndarray:
     """
     Create a random chromosome (subset of k unique indices).
@@ -30,7 +41,40 @@ def create_chromosome(k: int, pool_size: int, rng: np.random.Generator = None) -
     
     if k > pool_size:
         raise ValueError(f"Cannot create chromosome of size {k} from pool of size {pool_size}")
-    
+
+    # Optional: class-stratified initialization (helps classification representativeness)
+    if getattr(config, "GA_STRATIFIED_INIT", False):
+        labels = _get_labels()
+        num_classes = int(getattr(config, "NUM_CLASSES", int(labels.max()) + 1))
+
+        # Build per-class pools once (fast enough for MNIST scale)
+        per_class = [np.flatnonzero(labels == c) for c in range(num_classes)]
+        # Ensure each class contributes at least 1 sample when possible
+        base = max(1, k // num_classes)
+        counts = np.full(num_classes, base, dtype=int)
+        # Distribute remainder
+        counts[: (k - counts.sum())] += 1
+
+        # Sample per class, allowing fallback if a class has too few points
+        chosen = []
+        for c in range(num_classes):
+            pool = per_class[c]
+            take = int(min(counts[c], len(pool)))
+            if take > 0:
+                chosen.append(rng.choice(pool, size=take, replace=False))
+
+        chosen = np.concatenate(chosen) if len(chosen) else np.array([], dtype=int)
+
+        # If we didn't reach k (rare), fill remaining randomly from global pool excluding chosen
+        if len(chosen) < k:
+            used = set(chosen.tolist())
+            remaining = k - len(chosen)
+            available = np.array([i for i in range(pool_size) if i not in used], dtype=int)
+            fill = rng.choice(available, size=remaining, replace=False)
+            chosen = np.concatenate([chosen, fill])
+
+        return np.sort(chosen.astype(int, copy=False))
+
     chromosome = rng.choice(pool_size, size=k, replace=False)
     return np.sort(chromosome)
 
